@@ -125,6 +125,7 @@ public class BRender {
 
     // R1 = top-left/bottom-right, R2 = top-right/bottom-left
     // Example: bRender.roundRect(100, 100, 100, 100, 0xFFFF0000, 10, 20, 1);
+    @Deprecated // use 4 radius method instead
     public void roundRect(int x, int y, int w, int h, int color, int r1, int r2, int layer) {
         roundRects.add(new RoundRectCmd(x, y, w, h, color, r1, r2, r1, r2, 0, layer));
     }
@@ -151,6 +152,7 @@ public class BRender {
 
     // R1 = top-left/bottom-right, R2 = top-right/bottom-left
     // Example: bRender.strokeRounded(100, 100, 100, 100, 0xFFFF0000, 10, 5, 2, 1);
+    @Deprecated
     public void strokeRounded(int x, int y, int w, int h, int color, int r1, int r2, int strokeWidth, int layer) {
         roundRects.add(new RoundRectCmd(x, y, w, h, color, r1, r2, r1, r2, strokeWidth, layer));
     }
@@ -168,6 +170,7 @@ public class BRender {
 
     // R1 = top-left/bottom-right, R2 = top-right/bottom-left
     // Example: bRender.roundRectStroked(100, 100, 100, 100, 0xFF0000FF, 0xFFFF0000, 10, 5, 2, 1);
+    @Deprecated
     public void roundRectStroked(int x, int y, int w, int h, int fillColor, int strokeColor, int r1, int r2, int strokeWidth, int layer) {
         roundRects.add(new RoundRectCmd(x, y, w, h, fillColor, r1, r2, r1, r2, 0, layer));
         roundRects.add(new RoundRectCmd(x, y, w, h, strokeColor, r1, r2, r1, r2, strokeWidth, layer));
@@ -181,24 +184,25 @@ public class BRender {
 
     // Example: bRender.drawText(myFont, "Hello!", 100, 100, 24, 0xFFFFFFFF, 1);
     public void drawText(BFont font, String text, float x, float y, float size, int color, int layer) {
-if (text == null || text.isEmpty()) return;
+        if (text == null || text.isEmpty()) return;
         texts.add(new TextCmd(font, text, x, y, size, color, false, false, layer));
     }
 
-public void drawText(BFont font, FormattedCharSequence text, float x, float y, float size, int defaultColor, int layer) {
-    if (text == null) return;
-    BFont.FormattedQuads fq = font.getQuadsFormatted(text, x, y, size, defaultColor);
-    if (fq.quads() == null || fq.quads().length == 0) return; // <-- the actual guard you need
-    texts.add(new TextCmd(font, "", x, y, size, defaultColor, false, false, layer, fq.colors(), fq.quads()));
-}
+    // Example: bRender.drawText(myFont, Component.nullToEmpty("§cT§eh§ai§bs §dt§5e§cx§et §eis §ar§ba§di§5n§cb§eo§aw").getVisualOrderText(), 100, 100, 24, 0xFFFFFFFF, 1);
+    public void drawText(BFont font, FormattedCharSequence text, float x, float y, float size, int defaultColor, int layer) {
+        if (text == null) return;
+        BFont.FormattedQuads fq = font.getQuadsFormatted(text, x, y, size, defaultColor);
+        if (fq.quads() == null || fq.quads().length == 0) return;
+        texts.add(new TextCmd(font, "", x, y, size, defaultColor, false, false, layer, fq.colors(), fq.quads()));
+    }
 
     // Example: bRender.drawTextShadow(myFont, "Hello!", 100, 100, 24, 0xFFFFFFFF, 1);
     public void drawTextShadow(BFont font, String text, float x, float y, float size, int color, int layer) {
-if (text == null || text.isEmpty()) return;
+        if (text == null || text.isEmpty()) return;
         texts.add(new TextCmd(font, text, x, y, size, color, true, false, layer));
     }
 
-    // this will fallback to mc font
+    // this will NOT fallback to mc font for now
     public void drawText(String text, float x, float y, int color, int layer) {
         texts.add(new TextCmd(null, text, x, y, 0, color, false, false, layer));
     }
@@ -286,7 +290,7 @@ if (text == null || text.isEmpty()) return;
     }
 
 
-    // Call after adding all elements (e.g. rect, round rect)
+    // Call after adding all elements you want
     public void flush(GuiGraphics graphics) {
         pendingGraphics = graphics;
         for (RoundRectCmd c : roundRects) DRAW_LIST.add(new DrawEntry(c.layer(), 0, c));
