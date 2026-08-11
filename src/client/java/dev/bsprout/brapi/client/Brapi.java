@@ -39,6 +39,17 @@ public class Brapi implements ClientModInitializer {
             @Override
             public void onResourceManagerReload(ResourceManager manager) {
                 initPipelines();
+
+                // preload test screen assets for no freezes
+                if (Test.font != null) Test.font.close();
+                if (Test.texture != null) Test.texture.close();
+
+                Test.font = new BFont(
+                        Identifier.fromNamespaceAndPath("brapi", "fonts/noto_sans_regular.ttf"),
+                        new BFontEmojiResolver()
+                );
+                Test.texture = new BTexture(Identifier.fromNamespaceAndPath("brapi", "textures/mc_button.png"));
+                Test.nineSlice = new NineSlice(Test.texture, 4, 4, 4, 4);
             }
         });
         // Adding a simple test command to open our Test screen (dev/bsprout/brapi/client/Test.java)

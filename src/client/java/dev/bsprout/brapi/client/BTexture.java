@@ -31,13 +31,30 @@ public class BTexture implements ResourceManagerReloadListener {
     public int width;
     public int height;
 
-    private static final Logger LOGGER = LoggerFactory.getLogger("brapi");
+    public static final Logger LOGGER = LoggerFactory.getLogger("brapi");
 
     private final Identifier location;
 
     public BTexture(Identifier location) {
         this.location = location;
         load();
+        ALL.add(this);
+    }
+
+    private BTexture(String debugName, ByteBuffer rgba8Pixels, int width, int height) {
+        this.location = null;
+        this.width = width;
+        this.height = height;
+
+        texture = RenderSystem.getDevice().createTexture(
+                debugName,
+                GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
+                TextureFormat.RGBA8,
+                width, height, 1, 1
+        );
+        RenderSystem.getDevice().createCommandEncoder()
+                .writeToTexture(texture, rgba8Pixels, NativeImage.Format.RGBA, 0, 0, 0, 0, width, height);
+        view = RenderSystem.getDevice().createTextureView(texture);
         ALL.add(this);
     }
 
@@ -74,7 +91,7 @@ public class BTexture implements ResourceManagerReloadListener {
             MemoryUtil.memFree(h);
 
         } catch (Exception e) {
-            LOGGER.error("[BRender] Failed to load texture '" + location + "': " + e.getMessage() + " — using missing texture");
+            LOGGER.error("[BRender] Failed to load texture '" + location + "': " + e.getMessage() + " - using missing texture");
             pixels = makeMissingTexture();
             fromStb = false;
             width = 16; height = 16;
@@ -100,10 +117,10 @@ public class BTexture implements ResourceManagerReloadListener {
         for (int py = 0; py < 16; py++) {
             for (int px = 0; px < 16; px++) {
                 boolean magenta = (px < 8) != (py < 8);
-                buf.put((byte)(magenta ? 0xFF : 0x00)); // R
-                buf.put((byte)(0x00));                  // G
-                buf.put((byte)(magenta ? 0xFF : 0x00)); // B
-                buf.put((byte)(0xFF));                  // A
+                buf.put((byte)(magenta ? 0xFF : 0x00));
+                buf.put((byte)(0x00));
+                buf.put((byte)(magenta ? 0xFF : 0x00));
+                buf.put((byte)(0xFF));
             }
         }
         buf.flip();
@@ -112,12 +129,16 @@ public class BTexture implements ResourceManagerReloadListener {
 
     @Override
     public void onResourceManagerReload(ResourceManager manager) {
-        load();
+        if (location != null) load();
     }
 
     public void close() {
         ALL.remove(this);
         if (view != null) view.close();
         if (texture != null) texture.close();
+    }
+
+    public static Logger getLogger(){
+        return LOGGER;
     }
 }

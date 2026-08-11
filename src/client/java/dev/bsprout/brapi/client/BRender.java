@@ -11,13 +11,16 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.util.FormattedCharSequence;
-import org.joml.Matrix4f;
-import org.joml.Vector3f;
-import org.joml.Vector4f;
+import org.joml.*;
 import org.lwjgl.system.MemoryUtil;
 
+import java.lang.Math;
 import java.nio.ByteBuffer;
 import java.util.*;
+
+/**
+ * Core of Brapi Rendering
+ */
 
 public class BRender {
     public static class RoundRectCmd {
@@ -48,9 +51,11 @@ public class BRender {
     private final List<RoundRectCmd> roundRects = new ArrayList<>();
     private final List<RectCmd> rects = new ArrayList<>();
 
-    private record TextCmd(BFont font, String text, float x, float y, float size, int color, boolean shadow, boolean centered, int layer, int[] charColors, float[][] bakedQuads) {
+    private record TextCmd(BFont font, String text, float x, float y, float size, int color, boolean shadow,
+                           boolean centered, int layer, int[] charColors, float[][] bakedQuads,
+                           List<BFont.EmojiQuad> emojiQuads) {
         TextCmd(BFont font, String text, float x, float y, float size, int color, boolean shadow, boolean centered, int layer) {
-            this(font, text, x, y, size, color, shadow, centered, layer, null, null);
+            this(font, text, x, y, size, color, shadow, centered, layer, null, null, null);
         }
     }
 
@@ -79,7 +84,7 @@ public class BRender {
 
     public static GuiGraphics pendingGraphics;
 
-    public record DrawEntry(int layer, int type, Object cmd) {}
+    public record DrawEntry(int layer, int type, Object cmd, Matrix4f pose) {}
     public static final List<DrawEntry> DRAW_LIST = new ArrayList<>();
     // Each entry: { layer, type, cmd }
     // type: 0=roundrect, 1=rect, 2=text, 3=texture, 4=nineslice
@@ -112,6 +117,33 @@ public class BRender {
     private static GpuBuffer[] vertexGpuBufs = null;
     // Single persistent rect data GPU buffer
     private static GpuBuffer rectDataGpuBuf = null;
+
+    // NEW: Offsets and scaling
+    public static class FlushContext {
+        public float offsetX = 0;
+        public float offsetY = 0;
+        public float scaleX = 1.0f;
+        public float scaleY = 1.0f;
+    }
+
+    @FunctionalInterface
+    public interface FlushOption {
+        void apply(FlushContext ctx);
+    }
+
+    public static FlushOption WithOffset(float x, float y) {
+        return ctx -> {
+            ctx.offsetX += x;
+            ctx.offsetY += y;
+        };
+    }
+
+    public static FlushOption WithScale(float s) {
+        return ctx -> {
+            ctx.scaleX *= s;
+            ctx.scaleY *= s;
+        };
+    }
 
     // Example: bRender.roundRect(100, 100, 100, 100, 0xFFFF0000, 10, 1);
     public void roundRect(int x, int y, int w, int h, int color, int radius, int layer) {
@@ -185,33 +217,38 @@ public class BRender {
     // Example: bRender.drawText(myFont, "Hello!", 100, 100, 24, 0xFFFFFFFF, 1);
     public void drawText(BFont font, String text, float x, float y, float size, int color, int layer) {
         if (text == null || text.isEmpty()) return;
-        texts.add(new TextCmd(font, text, x, y, size, color, false, false, layer));
-    }
 
+        BFont.TextRenderBatch batch = font.getTextRenderBatch(text, x, y, size, color);
+        if (batch.fontQuads().isEmpty() && batch.emojiQuads().isEmpty()) return;
+
+        texts.add(new TextCmd(font, "", x, y, size, color, false, false, layer,
+                batch.fontColors().stream().mapToInt(Integer::intValue).toArray(),
+                batch.fontQuads().toArray(new float[0][]),
+                batch.emojiQuads()));
+    }
     // Example: bRender.drawText(myFont, Component.nullToEmpty("§cT§eh§ai§bs §dt§5e§cx§et §eis §ar§ba§di§5n§cb§eo§aw").getVisualOrderText(), 100, 100, 24, 0xFFFFFFFF, 1);
     public void drawText(BFont font, FormattedCharSequence text, float x, float y, float size, int defaultColor, int layer) {
         if (text == null) return;
-        BFont.FormattedQuads fq = font.getQuadsFormatted(text, x, y, size, defaultColor);
-        if (fq.quads() == null || fq.quads().length == 0) return;
-        texts.add(new TextCmd(font, "", x, y, size, defaultColor, false, false, layer, fq.colors(), fq.quads()));
-    }
 
-    // Example: bRender.drawTextShadow(myFont, "Hello!", 100, 100, 24, 0xFFFFFFFF, 1);
-    public void drawTextShadow(BFont font, String text, float x, float y, float size, int color, int layer) {
-        if (text == null || text.isEmpty()) return;
-        texts.add(new TextCmd(font, text, x, y, size, color, true, false, layer));
+        BFont.TextRenderBatch batch = font.getTextRenderBatch(text, x, y, size, defaultColor);
+        if (batch.fontQuads().isEmpty() && batch.emojiQuads().isEmpty()) return;
+
+        texts.add(new TextCmd(font, "", x, y, size, defaultColor, false, false, layer,
+                batch.fontColors().stream().mapToInt(Integer::intValue).toArray(),
+                batch.fontQuads().toArray(new float[0][]),
+                batch.emojiQuads()));
     }
 
     // this will NOT fallback to mc font for now
-    public void drawText(String text, float x, float y, int color, int layer) {
-        texts.add(new TextCmd(null, text, x, y, 0, color, false, false, layer));
-    }
-    public void drawTextShadow(String text, float x, float y, int color, int layer) {
-        texts.add(new TextCmd(null, text, x, y, 0, color, true, false, layer));
-    }
-    public void drawTextCentered(String text, float x, float y, int color, int layer) {
-        texts.add(new TextCmd(null, text, x, y, 0, color, false, true, layer));
-    }
+//    public void drawText(String text, float x, float y, int color, int layer) {
+//        texts.add(new TextCmd(null, text, x, y, 0, color, false, false, layer));
+//    }
+//    public void drawTextShadow(String text, float x, float y, int color, int layer) {
+//        texts.add(new TextCmd(null, text, x, y, 0, color, true, false, layer));
+//    }
+//    public void drawTextCentered(String text, float x, float y, int color, int layer) {
+//        texts.add(new TextCmd(null, text, x, y, 0, color, false, true, layer));
+//    }
 
     // Stretch texture to fill region
     // Example: bRender.drawTexture(tex, 100, 100, 200, 150, 0xFFFFFFFF, 1);
@@ -291,22 +328,47 @@ public class BRender {
 
 
     // Call after adding all elements you want
-    public void flush(GuiGraphics graphics) {
+    public void flush(GuiGraphics graphics, FlushOption... options) {
         pendingGraphics = graphics;
-        for (RoundRectCmd c : roundRects) DRAW_LIST.add(new DrawEntry(c.layer(), 0, c));
-        // Convert plain rects to round rects with r=0, reuse type 0
+
+        FlushContext ctx = new FlushContext();
+        for (FlushOption option : options) {
+            option.apply(ctx);
+        }
+
+        Matrix3x2fStack pose = graphics.pose();
+
+        pose.pushMatrix();
+
+        if (ctx.offsetX != 0 || ctx.offsetY != 0) {
+            pose.translate(ctx.offsetX, ctx.offsetY);
+        }
+        if (ctx.scaleX != 1.0f || ctx.scaleY != 1.0f) {
+            pose.scale(ctx.scaleX, ctx.scaleY);
+        }
+
+        Matrix4f currentPose = new Matrix4f()
+                .m00(pose.m00())
+                .m01(pose.m01())
+                .m10(pose.m10())
+                .m11(pose.m11())
+                .m30(pose.m20())  // translation X
+                .m31(pose.m21()); // translation Y
+
+        for (RoundRectCmd c : roundRects) DRAW_LIST.add(new DrawEntry(c.layer(), 0, c, currentPose));
         for (RectCmd c : rects) DRAW_LIST.add(new DrawEntry(c.layer(), 0,
-                new RoundRectCmd(c.x(), c.y(), c.w(), c.h(), c.color(), 0, 0, 0, 0, 0, c.layer())));
-        for (TextCmd c : texts)           DRAW_LIST.add(new DrawEntry(c.layer(), 2, c));
-        for (TextureCmd c : textures)     DRAW_LIST.add(new DrawEntry(c.layer(), 3, c));
-        for (NineSliceCmd c : nineSlices) DRAW_LIST.add(new DrawEntry(c.layer(), 4, c));
+                new RoundRectCmd(c.x(), c.y(), c.w(), c.h(), c.color(), 0, 0, 0, 0, 0, c.layer()), currentPose));
+        for (TextCmd c : texts)           DRAW_LIST.add(new DrawEntry(c.layer(), 2, c, currentPose));
+        for (TextureCmd c : textures)     DRAW_LIST.add(new DrawEntry(c.layer(), 3, c, currentPose));
+        for (NineSliceCmd c : nineSlices) DRAW_LIST.add(new DrawEntry(c.layer(), 4, c, currentPose));
 
         roundRects.clear(); rects.clear(); texts.clear();
         textures.clear(); nineSlices.clear(); blurs.clear();
+
+        pose.popMatrix();
     }
 
-    /* Actually render everything (you shouldn't run this, its ran automagically)
-       if you want you can steal this for your custom needs...
+    /** Actually render everything (you shouldn't run this, its ran automagically)
      */
     public static void flushAll() {
         if (DRAW_LIST.isEmpty()) return;
@@ -315,24 +377,31 @@ public class BRender {
 
         // Batch consecutive round rects for drawMultipleIndexed fast path
         List<RoundRectCmd> rrBatch = new ArrayList<>();
+        Matrix4f lastRRPose = null;
 
         for (DrawEntry entry : DRAW_LIST) {
             if (entry.type() != 0 && !rrBatch.isEmpty()) {
-                flushRoundRectBatch(rrBatch);
+                flushRoundRectBatch(rrBatch, lastRRPose);
                 rrBatch.clear();
             }
 
             switch (entry.type()) {
-                case 0 -> rrBatch.add((RoundRectCmd) entry.cmd());
-                case 2 -> flushTextCmd((TextCmd) entry.cmd(), pendingGraphics);
+                case 0 -> {
+                    rrBatch.add((RoundRectCmd) entry.cmd());
+                    lastRRPose = entry.pose();
+                }
+                case 2 -> flushTextCmd((TextCmd) entry.cmd(), pendingGraphics, entry.pose());
                 case 3 -> {
                     TextureCmd c = (TextureCmd) entry.cmd();
                     // get correct sampler
                     Minecraft mc = Minecraft.getInstance();
                     RenderTarget rt = mc.getMainRenderTarget();
+                    Matrix4f renderPose = new Matrix4f(entry.pose()).translate(0.0F, 0.0F, -11000.0F);
                     GpuBufferSlice dt = RenderSystem.getDynamicUniforms().writeTransform(
-                            new Matrix4f().setTranslation(0, 0, -11000),
-                            new Vector4f(1,1,1,1), new Vector3f(), new Matrix4f()
+                            renderPose,
+                            new Vector4f(1, 1, 1, 1),
+                            new Vector3f(),
+                            new Matrix4f()
                     );
                     GpuSampler sampler = c.tile()
                             ? (c.linear() ? RenderSystem.getSamplerCache().getRepeat(FilterMode.LINEAR)
@@ -347,9 +416,12 @@ public class BRender {
                     NineSliceCmd c = (NineSliceCmd) entry.cmd();
                     Minecraft mc = Minecraft.getInstance();
                     RenderTarget rt = mc.getMainRenderTarget();
+                    Matrix4f renderPose = new Matrix4f(entry.pose()).translate(0.0F, 0.0F, -11000.0F);
                     GpuBufferSlice dt = RenderSystem.getDynamicUniforms().writeTransform(
-                            new Matrix4f().setTranslation(0, 0, -11000),
-                            new Vector4f(1,1,1,1), new Vector3f(), new Matrix4f()
+                            renderPose,
+                            new Vector4f(1, 1, 1, 1),
+                            new Vector3f(),
+                            new Matrix4f()
                     );
                     GpuSampler sampler = c.linear()
                             ? RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
@@ -360,13 +432,12 @@ public class BRender {
         }
 
         // Flush any trailing round rect batch
-        if (!rrBatch.isEmpty()) flushRoundRectBatch(rrBatch);
+        if (!rrBatch.isEmpty()) flushRoundRectBatch(rrBatch, lastRRPose);
 
         DRAW_LIST.clear();
     }
-    private static void flushTextCmd(TextCmd cmd, GuiGraphics graphics) {
+    private static void flushTextCmd(TextCmd cmd, GuiGraphics graphics, Matrix4f pose) {
         if (cmd.font() == null) {
-            // Use Minecraft font via GuiGraphics
             Font mcFont = Minecraft.getInstance().font;
             if (cmd.centered()) {
                 graphics.drawCenteredString(mcFont, cmd.text(), (int)cmd.x(), (int)cmd.y(), cmd.color());
@@ -379,71 +450,80 @@ public class BRender {
         Minecraft mc = Minecraft.getInstance();
         RenderTarget renderTarget = mc.getMainRenderTarget();
 
+        Matrix4f textTransform = new Matrix4f(pose).translate(0.0F, 0.0F, -11000.0F);
         GpuBufferSlice dynamicTransforms = RenderSystem.getDynamicUniforms()
-                .writeTransform(
-                        new Matrix4f().setTranslation(0.0F, 0.0F, -11000.0F),
-                        new Vector4f(1.0F, 1.0F, 1.0F, 1.0F),
-                        new Vector3f(),
-                        new Matrix4f()
-                );
-
+                .writeTransform(textTransform, new Vector4f(1.0F, 1.0F, 1.0F, 1.0F), new Vector3f(), new Matrix4f());
         GpuSampler sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
 
         float[][] quads = cmd.bakedQuads() != null
                 ? cmd.bakedQuads()
                 : cmd.font().getQuads(cmd.text(), cmd.x(), cmd.y(), cmd.size());
 
-        ByteBuffer verts = MemoryUtil.memAlloc(quads.length * 4 * 24);
+        // Only run the SDF glyph pass if there's actually something to draw.
+        // an all-emoji string (e.g. "🎉🐍🍕") has zero font quads, and a
+        // zero-length GPU buffer alloc throws.
+        if (quads.length > 0) {
+            ByteBuffer verts = MemoryUtil.memAlloc(quads.length * 4 * 24);
 
-        for (int i = 0; i < quads.length; i++) {
-            float[] q = quads[i];
-            int color = (cmd.charColors() != null && i < cmd.charColors().length)
-                    ? cmd.charColors()[i]
-                    : cmd.color();
-            float x0 = q[0], y0 = q[1], x1 = q[2], y1 = q[3];
-            float u0 = q[4], v0 = q[5], u1 = q[6], v1 = q[7];
-            putTextVertex(verts, x0, y0, u0, v0, color);
-            putTextVertex(verts, x0, y1, u0, v1, color);
-            putTextVertex(verts, x1, y1, u1, v1, color);
-            putTextVertex(verts, x1, y0, u1, v0, color);
+            for (int i = 0; i < quads.length; i++) {
+                float[] q = quads[i];
+                int color = (cmd.charColors() != null && i < cmd.charColors().length)
+                        ? cmd.charColors()[i]
+                        : cmd.color();
+                float x0 = q[0], y0 = q[1], x1 = q[2], y1 = q[3];
+                float u0 = q[4], v0 = q[5], u1 = q[6], v1 = q[7];
+                putTextVertex(verts, x0, y0, u0, v0, color);
+                putTextVertex(verts, x0, y1, u0, v1, color);
+                putTextVertex(verts, x1, y1, u1, v1, color);
+                putTextVertex(verts, x1, y0, u1, v0, color);
+            }
+            verts.flip();
+
+            int indexCount = quads.length * 6;
+            RenderSystem.AutoStorageIndexBuffer indexStorage =
+                    RenderSystem.getSequentialBuffer(com.mojang.blaze3d.vertex.VertexFormat.Mode.QUADS);
+            GpuBuffer indexBuf = indexStorage.getBuffer(indexCount);
+
+            GpuBuffer vertexBuf = RenderSystem.getDevice().createBuffer(
+                    () -> "BRender text vertices",
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
+                    verts.remaining()
+            );
+            RenderSystem.getDevice().createCommandEncoder()
+                    .writeToBuffer(vertexBuf.slice(), verts);
+            MemoryUtil.memFree(verts);
+
+            try (RenderPass pass = RenderSystem.getDevice()
+                    .createCommandEncoder()
+                    .createRenderPass(
+                            () -> "BRender text",
+                            renderTarget.getColorTextureView(),
+                            OptionalInt.empty(),
+                            renderTarget.useDepth ? renderTarget.getDepthTextureView() : null,
+                            OptionalDouble.empty()
+                    )) {
+                pass.setPipeline(Brapi.TEXT_PIPELINE);
+                RenderSystem.bindDefaultUniforms(pass);
+                pass.setUniform("DynamicTransforms", dynamicTransforms);
+                pass.bindTexture("Sampler0", cmd.font().atlasView, sampler);
+                pass.setVertexBuffer(0, vertexBuf);
+                pass.setIndexBuffer(indexBuf, indexStorage.type());
+                pass.drawIndexed(0, 0, indexCount, 1);
+            }
+
+            vertexBuf.close();
         }
-        verts.flip();
 
-        int indexCount = quads.length * 6;
-        RenderSystem.AutoStorageIndexBuffer indexStorage =
-                RenderSystem.getSequentialBuffer(com.mojang.blaze3d.vertex.VertexFormat.Mode.QUADS);
-        GpuBuffer indexBuf = indexStorage.getBuffer(indexCount);
-
-        GpuBuffer vertexBuf = RenderSystem.getDevice().createBuffer(
-                () -> "BRender text vertices",
-                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
-                verts.remaining()
-        );
-        RenderSystem.getDevice().createCommandEncoder()
-                .writeToBuffer(vertexBuf.slice(), verts);
-        MemoryUtil.memFree(verts);
-
-        try (RenderPass pass = RenderSystem.getDevice()
-                .createCommandEncoder()
-                .createRenderPass(
-                        () -> "BRender text",
-                        renderTarget.getColorTextureView(),
-                        OptionalInt.empty(),
-                        renderTarget.useDepth ? renderTarget.getDepthTextureView() : null,
-                        OptionalDouble.empty()
-                )) {
-            pass.setPipeline(Brapi.TEXT_PIPELINE);
-            RenderSystem.bindDefaultUniforms(pass);
-            pass.setUniform("DynamicTransforms", dynamicTransforms);
-            pass.bindTexture("Sampler0", cmd.font().atlasView, sampler);
-            pass.setVertexBuffer(0, vertexBuf);
-            pass.setIndexBuffer(indexBuf, indexStorage.type());
-            pass.drawIndexed(0, 0, indexCount, 1);
+        if (cmd.emojiQuads() != null && !cmd.emojiQuads().isEmpty()) {
+            GpuSampler emojiSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
+            for (BFont.EmojiQuad eq : cmd.emojiQuads()) {
+                drawTextureQuad(renderTarget, dynamicTransforms, emojiSampler, eq.textureView(),
+                        eq.x0(), eq.y0(), eq.x1() - eq.x0(), eq.y1() - eq.y0(),
+                        0, 0, 1, 1, 0xFFFFFFFF);
+            }
         }
-
-        vertexBuf.close();
     }
-    private static void flushRoundRectBatch(List<RoundRectCmd> batch) {
+    private static void flushRoundRectBatch(List<RoundRectCmd> batch, Matrix4f pose) {
         if (batch.isEmpty()) return;
 
         Minecraft mc = Minecraft.getInstance();
@@ -478,9 +558,12 @@ public class BRender {
                 com.mojang.blaze3d.vertex.VertexFormat.Mode.QUADS);
         GpuBuffer indexBuf = indexStorage.getBuffer(6);
 
+        Matrix4f rectTransform = new Matrix4f(pose)
+                .translate(0.0F, 0.0F, -11000.0F);
+
         GpuBufferSlice dynamicTransforms = RenderSystem.getDynamicUniforms()
                 .writeTransform(
-                        new Matrix4f().setTranslation(0.0F, 0.0F, -11000.0F),
+                        rectTransform,
                         new Vector4f(1.0F, 1.0F, 1.0F, 1.0F),
                         new Vector3f(),
                         new Matrix4f()
@@ -488,6 +571,16 @@ public class BRender {
 
         List<RenderPass.Draw<Void>> draws = new ArrayList<>(count);
         ByteBuffer verts = MemoryUtil.memAlloc(4 * 16);
+
+        Vector3f scale = pose.getScale(new Vector3f());
+        float scaleX = scale.x();
+        float scaleY = scale.y();
+
+        Vector3f translation = pose.getTranslation(new Vector3f());
+        float offsetX = translation.x();
+        float offsetY = translation.y();
+
+        Vector4f posTmp = new Vector4f();
 
         for (int i = 0; i < count; i++) {
             RoundRectCmd cmd = batch.get(i);
@@ -508,15 +601,32 @@ public class BRender {
             RenderSystem.getDevice().createCommandEncoder()
                     .writeToBuffer(vertexGpuBufs[i].slice(), verts);
 
-            RECT_DATA_STAGING.putFloat(cmd.x() * guiScale);
-            RECT_DATA_STAGING.putFloat(screenH - (cmd.y() + cmd.h()) * guiScale);
-            RECT_DATA_STAGING.putFloat(cmd.w() * guiScale);
-            RECT_DATA_STAGING.putFloat(cmd.h() * guiScale);
-            RECT_DATA_STAGING.putFloat(cmd.r1() * guiScale);
-            RECT_DATA_STAGING.putFloat(cmd.r2() * guiScale);
-            RECT_DATA_STAGING.putFloat(cmd.r3() * guiScale);
-            RECT_DATA_STAGING.putFloat(cmd.r4() * guiScale);
-            RECT_DATA_STAGING.putFloat(cmd.strokeWidth() * guiScale);
+            float posX = cmd.x() + offsetX;
+            float posY = cmd.y() + offsetY;
+
+            posTmp.set(cmd.x(), cmd.y(), 0.0f, 1.0f).mul(pose);
+            float transformedX = posTmp.x();
+            float transformedY = posTmp.y();
+
+            float transformedW = cmd.w() * scaleX;
+            float transformedH = cmd.h() * scaleY;
+
+            float avgScale = (scaleX + scaleY) * 0.5f;
+            float transformedR1 = cmd.r1() * avgScale;
+            float transformedR2 = cmd.r2() * avgScale;
+            float transformedR3 = cmd.r3() * avgScale;
+            float transformedR4 = cmd.r4() * avgScale;
+            float transformedStroke = cmd.strokeWidth() * avgScale;
+
+            RECT_DATA_STAGING.putFloat(transformedX * guiScale);
+            RECT_DATA_STAGING.putFloat(screenH - (transformedY + transformedH) * guiScale);
+            RECT_DATA_STAGING.putFloat(transformedW * guiScale);
+            RECT_DATA_STAGING.putFloat(transformedH * guiScale);
+            RECT_DATA_STAGING.putFloat(transformedR1 * guiScale);
+            RECT_DATA_STAGING.putFloat(transformedR2 * guiScale);
+            RECT_DATA_STAGING.putFloat(transformedR3 * guiScale);
+            RECT_DATA_STAGING.putFloat(transformedR4 * guiScale);
+            RECT_DATA_STAGING.putFloat(transformedStroke * guiScale);
             RECT_DATA_STAGING.putFloat(0).putFloat(0).putFloat(0);
 
             final int rectDataOffset = i * 48;
