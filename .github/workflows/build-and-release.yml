@@ -1,34 +1,83 @@
-release:
-  needs: build
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+name: Build & Release
 
-    - name: Extract changelog section
-      id: changelog
-      run: |
-        TAG="${GITHUB_REF_NAME}"
-        BODY=$(awk "/^## $TAG/{flag=1;next}/^## /{flag=0}flag" CHANGELOG.md)
-        if [ -z "$BODY" ]; then
-          BODY="No changelog entry found for $TAG."
-        fi
-        echo "body<<EOF" >> $GITHUB_OUTPUT
-        echo "$BODY" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+on:
+  push:
+    tags:
+      - "v*"
 
-    - name: Download built jar
-      uses: actions/download-artifact@v4
-      with:
-        name: mod-jar
-        path: dist
+permissions:
+  contents: write
 
-    - name: Create Release
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        gh release create "${{ github.ref_name }}" \
-          "dist/${{ needs.build.outputs.jar_name }}" \
-          --title "${{ github.ref_name }}" \
-          --notes "${{ steps.changelog.outputs.body }}"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      jar_name: ${{ steps.build.outputs.jar_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Build
+        id: build
+        run: |
+          chmod +x ./gradlew
+          ./gradlew build
+
+          JAR=$(find build/libs -maxdepth 1 -type f -name "*.jar" ! -name "*sources*" ! -name "*dev*" | head -n 1)
+
+          echo "Found JAR: $JAR"
+          echo "jar_name=$(basename "$JAR")" >> $GITHUB_OUTPUT
+
+      - name: Upload JAR as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-jar
+          path: build/libs/${{ steps.build.outputs.jar_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+
+          BODY=$(awk "/^## $TAG/{flag=1;next}/^## /{flag=0}flag" CHANGELOG.md)
+
+          if [ -z "$BODY" ]; then
+            BODY="No changelog entry found for $TAG."
+          fi
+
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Download built jar
+        uses: actions/download-artifact@v4
+        with:
+          name: mod-jar
+          path: dist
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            "dist/${{ needs.build.outputs.jar_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "${{ steps.changelog.outputs.body }}"
